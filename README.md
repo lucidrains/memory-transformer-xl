@@ -2,7 +2,6 @@
 
 A combination of Transformer-XL with ideas from Memory Transformers. While in Transformer-XL the memory is just a FIFO queue, this repository will attempt to update the memory (queries) against the incoming hidden states (keys / values) with a memory attention network. The memory attention network will utilize linear attention to be performant, followed by GRU gating, and will be backpropagated through time to learn how to properly store and discard new/old memory.
 
-
 ## Citations
 
 ```bibtex
@@ -47,6 +46,21 @@ A combination of Transformer-XL with ideas from Memory Transformers. While in Tr
   volume    = {abs/1812.01243},
   year      = {2018},
   url       = {http://arxiv.org/abs/1812.01243}
+}
+```
+
+```bibtex
+@article{DBLP:journals/corr/abs-1907-01470,
+    author    = {Sainbayar Sukhbaatar and
+               Edouard Grave and
+               Guillaume Lample and
+               Herv{\'{e}} J{\'{e}}gou and
+               Armand Joulin},
+    title     = {Augmenting Self-attention with Persistent Memory},
+    journal   = {CoRR},
+    volume    = {abs/1907.01470},
+    year      = {2019},
+    url       = {http://arxiv.org/abs/1907.01470}
 }
 ```
 
