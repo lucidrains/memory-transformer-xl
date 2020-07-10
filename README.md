@@ -28,4 +28,15 @@ A combination of Transformer-XL with ideas from Memory Transformers. While in Tr
 }
 ```
 
+```bibtex
+@misc{parisotto2019stabilizing,
+    title={Stabilizing Transformers for Reinforcement Learning},
+    author={Emilio Parisotto and H. Francis Song and Jack W. Rae and Razvan Pascanu and Caglar Gulcehre and Siddhant M. Jayakumar and Max Jaderberg and Raphael Lopez Kaufman and Aidan Clark and Seb Noury and Matthew M. Botvinick and Nicolas Heess and Raia Hadsell},
+    year={2019},
+    eprint={1910.06764},
+    archivePrefix={arXiv},
+    primaryClass={cs.LG}
+}
+```
+
 *<a href="https://youtu.be/AIiwuClvH6k?t=48">Memory is attention through time</a>* - Alex Graves
