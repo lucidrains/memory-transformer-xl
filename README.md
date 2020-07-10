@@ -39,4 +39,15 @@ A combination of Transformer-XL with ideas from Memory Transformers. While in Tr
 }
 ```
 
+```bibtex
+@article{shen2019efficient,
+  author    = {Zhuoran Shen and Mingyuan Zhang and Haiyu Zhao and Shuai Yi and Hongsheng Li},
+  title     = {Efficient Attention: Attention with Linear Complexities},
+  journal   = {CoRR},
+  volume    = {abs/1812.01243},
+  year      = {2018},
+  url       = {http://arxiv.org/abs/1812.01243}
+}
+```
+
 *<a href="https://youtu.be/AIiwuClvH6k?t=48">Memory is attention through time</a>* - Alex Graves
