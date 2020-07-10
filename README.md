@@ -1,4 +1,4 @@
-## Memory Transformer
+## Memory Transformer-XL
 
 A combination of Transformer-XL with ideas from Memory Transformers. While in Transformer-XL the memory is just a FIFO queue, this repository will attempt to update the memory (queries) against the incoming hidden states (keys / values) with a memory attention network. The memory attention network will utilize linear attention to be performant, and will be backpropagated through time to learn how to properly store and discard new/old memory.
 
@@ -27,3 +27,5 @@ A combination of Transformer-XL with ideas from Memory Transformers. While in Tr
     primaryClass={cs.CL}
 }
 ```
+
+*<a href="https://youtu.be/AIiwuClvH6k?t=48">Memory is attention through time</a>* - Alex Graves
