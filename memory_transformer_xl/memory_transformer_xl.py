@@ -10,7 +10,7 @@ from inspect import isfunction
 
 # structs
 
-Memory = namedtuple('Memory', ['mem', 'compressed_mem'])
+Memory = namedtuple('Memory', ['short', 'long'])
 
 # helper functions
 
@@ -349,4 +349,4 @@ class MemoryTransformerXL(nn.Module):
         next_mem, next_cmem = map(lambda x: x.detach(), (next_mem, next_cmem))
 
         aux_loss = aux_loss * self.reconstruction_loss_weight / num_memory_layers
-        return out, Memory(mem = next_mem, compressed_mem = next_cmem), aux_loss
+        return out, Memory(short = next_mem, long = next_cmem), aux_loss
