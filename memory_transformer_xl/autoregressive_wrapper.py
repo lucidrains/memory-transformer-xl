@@ -9,7 +9,7 @@ from torch.nn.utils.rnn import pad_sequence
 
 # structs
 
-Return = namedtuple('Return', ['loss', 'aux_loss', 'is_last_batch'])
+Return = namedtuple('Return', ['loss', 'is_last_batch'])
 
 # helper functions
 
@@ -78,7 +78,7 @@ class AutoregressiveWrapper(nn.Module):
         input_len = out.shape[1]
 
         for _ in range(seq_len):
-            logits, mem, aux_loss = self.net(out[:, -input_len:], memories = mem, mask = mask[:, -input_len:], **kwargs)
+            logits, mem = self.net(out[:, -input_len:], memories = mem, mask = mask[:, -input_len:], **kwargs)
             logits = logits[:, -1, :]
             filtered_logits = filter_logits_fn(logits, thres = filter_thres)
             probs = F.softmax(filtered_logits / temperature, dim=-1)
@@ -146,10 +146,10 @@ class AutoregressiveWrapper(nn.Module):
             for ind, (xi_seg_b, xo_seg_b, mask_seg_b, mem) in enumerate(zip(xi_seg, xo_seg, mask_seg, mems)):
                 is_last = ind == (grad_accumulate_every - 1)
 
-                logits, new_mem, aux_loss = self.net(xi_seg_b, mask = mask_seg_b, memories = mem, **kwargs)
+                logits, new_mem = self.net(xi_seg_b, mask = mask_seg_b, memories = mem, **kwargs)
                 new_mems.append(new_mem)
 
                 loss = F.cross_entropy(logits.transpose(1, 2), xo_seg_b, ignore_index = self.ignore_index)
-                yield Return(loss, aux_loss, is_last)
+                yield Return(loss, is_last)
 
             mems = new_mems

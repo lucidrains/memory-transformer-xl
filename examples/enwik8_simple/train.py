@@ -93,11 +93,10 @@ for i in tqdm.tqdm(range(NUM_BATCHES), mininterval=10., desc='training'):
 
     grad_accum_every = BATCH_SIZE / MAX_BATCH_SIZE
 
-    for mlm_loss, aux_loss, is_last in model(next(train_loader), max_batch_size = MAX_BATCH_SIZE, return_loss = True):
-        loss = mlm_loss + aux_loss
+    for loss, is_last in model(next(train_loader), max_batch_size = MAX_BATCH_SIZE, return_loss = True):
         (loss / grad_accum_every).backward()
 
-        print(f'training loss: {mlm_loss.item():.4f} | aux_loss: {aux_loss.item():.4f}')
+        print(f'training loss: {loss.item():.4f}')
 
         if is_last:
             torch.nn.utils.clip_grad_norm_(model.parameters(), 0.5)
@@ -107,7 +106,7 @@ for i in tqdm.tqdm(range(NUM_BATCHES), mininterval=10., desc='training'):
     if i % VALIDATE_EVERY == 0:
         model.eval()
         with torch.no_grad():
-            for loss, aux_loss, _ in model(next(val_loader), return_loss = True):
+            for loss, _ in model(next(val_loader), return_loss = True):
                 print(f'validation loss: {loss.item():.4f}')
 
     if i % GENERATE_EVERY == 0:

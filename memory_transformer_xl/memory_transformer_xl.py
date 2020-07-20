@@ -105,16 +105,6 @@ class PreNorm(nn.Module):
         x = self.norm(x)
         return self.fn(x, **kwargs)
 
-class ConvCompress(nn.Module):
-    def __init__(self, dim, ratio = 4):
-        super().__init__()
-        self.conv = nn.Conv1d(dim, dim, ratio, stride = ratio)
-
-    def forward(self, mem):
-        mem = mem.transpose(1, 2)
-        compressed_mem = self.conv(mem)
-        return compressed_mem.transpose(1, 2)
-
 # feedforward
 
 class GELU_(nn.Module):
@@ -149,7 +139,7 @@ class FeedForward(nn.Module):
 # attention.
 
 class SelfAttention(nn.Module):
-    def __init__(self, dim, seq_len, mem_len, lmem_len, lmem_ratio = 4, heads = 8, attn_dropout = 0., dropout = 0., reconstruction_attn_dropout = 0., one_kv_head = False):
+    def __init__(self, dim, seq_len, mem_len, lmem_len, lmem_ratio = 4, heads = 8, attn_dropout = 0., dropout = 0., memory_attn_dropout = 0., one_kv_head = False):
         super().__init__()
         assert (dim % heads) == 0, 'dimension must be divisible by the number of heads'
 
@@ -161,8 +151,6 @@ class SelfAttention(nn.Module):
         self.lmem_ratio = lmem_ratio
         self.scale = self.dim_head ** (-0.5)
 
-        self.compress_mem_fn = ConvCompress(dim, lmem_ratio)
-
         self.to_q = nn.Linear(dim, dim, bias = False)
 
         kv_dim = self.dim_head if one_kv_head else dim
@@ -172,7 +160,7 @@ class SelfAttention(nn.Module):
         self.attn_dropout = nn.Dropout(attn_dropout)
         self.dropout = nn.Dropout(dropout)
 
-        self.reconstruction_attn_dropout = nn.Dropout(reconstruction_attn_dropout)
+        self.memory_attn_dropout = nn.Dropout(memory_attn_dropout)
 
     def forward(self, x, memories = None, pos_emb = None, input_mask = None, calc_memory = True, **kwargs):
         b, t, e, h, dim_h = *x.shape, self.heads, self.dim_head
@@ -226,10 +214,9 @@ class SelfAttention(nn.Module):
 
         new_mem = mem
         new_lmem = lmem
-        aux_loss = torch.zeros(1, requires_grad = True, **to(q))
 
         if self.seq_len > t or not calc_memory:
-            return logits, Memory(new_mem, new_lmem), aux_loss
+            return logits, Memory(new_mem, new_lmem)
 
         # calculate memory and compressed memory
 
@@ -240,29 +227,9 @@ class SelfAttention(nn.Module):
             old_mem = F.pad(old_mem, (0, 0, old_mem_padding, 0), value = 0.)
 
         if old_mem.shape[1] != 0 and self.lmem_len > 0:
-            compressed_mem = self.compress_mem_fn(old_mem)
-            old_lmem, new_lmem = split_at_index(1, -self.lmem_len, torch.cat((lmem, compressed_mem), dim=1))
+            pass
 
-            # calculate auxiliary loss if training
-
-            if self.training:
-                lmem_k, lmem_v = self.to_kv(compressed_mem).chunk(2, dim=-1)
-                lmem_k, lmem_v = map(merge_heads, (lmem_k, lmem_v))
-                lmem_k, lmem_v = map(lambda x: x.expand(-1, h, -1, -1), (lmem_k, lmem_v))
-
-                old_mem_range = slice(- min(mem_len, self.mem_len) - self.seq_len, -self.seq_len)
-                old_mem_k, old_mem_v = map(lambda x: x[:, :, old_mem_range].clone(), (k, v))
-
-                q, old_mem_k, old_mem_v, lmem_k, lmem_v = map(lambda x: x.detach(), (q, old_mem_k, old_mem_v, lmem_k, lmem_v))
-
-                attn_fn = partial(full_attn, dropout_fn = self.reconstruction_attn_dropout)
-
-                aux_loss = F.mse_loss(
-                    attn_fn(q, old_mem_k, old_mem_v),
-                    attn_fn(q, lmem_k, lmem_v)
-                )
-
-        return logits, Memory(new_mem, new_lmem), aux_loss
+        return logits, Memory(new_mem, new_lmem)
 
 # transformer
 
@@ -298,9 +265,7 @@ class MemoryTransformerXL(nn.Module):
 
         self.attn_layers = nn.ModuleList([wrapper(PreNorm(dim, SelfAttention(dim, seq_len, mem_len, lmem_len, lmem_ratio, heads, dropout = attn_layer_dropout, attn_dropout = attn_dropout, reconstruction_attn_dropout = reconstruction_attn_dropout, one_kv_head = one_kv_head))) for _ in range(depth)])
         self.ff_layers = nn.ModuleList([wrapper(PreNorm(dim, FeedForward(dim, dropout = ff_dropout, glu = ff_glu))) for _ in range(depth)])
-
-        self.reconstruction_loss_weight = reconstruction_loss_weight
-
+        
     def forward(self, x, memories = None, mask = None):
         x = self.token_emb(x)
         x = self.to_model_dim(x)
@@ -321,7 +286,6 @@ class MemoryTransformerXL(nn.Module):
 
         next_mem = []
         next_lmem = []
-        aux_loss = torch.tensor(0., requires_grad = True, **to(x))
 
         mem_iter, lmem_iter = map(iterate_tensor, (mem, lmem))
 
@@ -333,19 +297,16 @@ class MemoryTransformerXL(nn.Module):
             if use_memory:
                 memories = (next(mem_iter), next(lmem_iter))
 
-            x, (mem_out, lmem_out), layer_aux_loss = attn(x, memories = memories, calc_memory = use_memory, input_mask = mask, pos_emb = pos_emb)
+            x, (mem_out, lmem_out) = attn(x, memories = memories, calc_memory = use_memory, input_mask = mask, pos_emb = pos_emb)
             x, = ff(x)
 
             if use_memory:
                 next_mem.append(mem_out)
                 next_lmem.append(lmem_out)
 
-            aux_loss = aux_loss + layer_aux_loss
-
         out = self.to_logits(x)
 
         next_mem, next_lmem = map(torch.stack, (next_mem, next_lmem))
-        next_mem, next_lmem = map(lambda x: x.detach(), (next_mem, next_lmem))
+        next_mem, next_lmem = map(torch.detach, (next_mem, next_lmem))
 
-        aux_loss = aux_loss * self.reconstruction_loss_weight / num_memory_layers
-        return out, Memory(short = next_mem, long = next_lmem), aux_loss
+        return out, Memory(short = next_mem, long = next_lmem)
