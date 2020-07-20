@@ -139,7 +139,7 @@ class FeedForward(nn.Module):
 # attention.
 
 class SelfAttention(nn.Module):
-    def __init__(self, dim, seq_len, mem_len, lmem_len, lmem_ratio = 4, heads = 8, attn_dropout = 0., dropout = 0., memory_attn_dropout = 0., one_kv_head = False):
+    def __init__(self, dim, seq_len, mem_len, lmem_len, heads = 8, attn_dropout = 0., dropout = 0., memory_attn_dropout = 0., one_kv_head = False):
         super().__init__()
         assert (dim % heads) == 0, 'dimension must be divisible by the number of heads'
 
@@ -148,7 +148,6 @@ class SelfAttention(nn.Module):
         self.seq_len = seq_len
         self.mem_len = mem_len
         self.lmem_len = lmem_len
-        self.lmem_ratio = lmem_ratio
         self.scale = self.dim_head ** (-0.5)
 
         self.to_q = nn.Linear(dim, dim, bias = False)
@@ -221,10 +220,6 @@ class SelfAttention(nn.Module):
         # calculate memory and compressed memory
 
         old_mem, new_mem = split_at_index(1, -self.mem_len, torch.cat((mem, x), dim=1))
-        old_mem_padding = old_mem.shape[1] % self.lmem_ratio
-
-        if old_mem_padding != 0:
-            old_mem = F.pad(old_mem, (0, 0, old_mem_padding, 0), value = 0.)
 
         if old_mem.shape[1] != 0 and self.lmem_len > 0:
             pass
@@ -234,15 +229,14 @@ class SelfAttention(nn.Module):
 # transformer
 
 class MemoryTransformerXL(nn.Module):
-    def __init__(self, num_tokens, dim, seq_len, depth, emb_dim = None, memory_layers = None, mem_len = None, lmem_len = None, lmem_ratio = 4, heads = 8, gru_gated_residual = True, mogrify_gru = False, attn_dropout = 0., ff_glu = False, ff_dropout = 0., attn_layer_dropout = 0., reconstruction_attn_dropout = 0., reconstruction_loss_weight = 1., one_kv_head = False):
+    def __init__(self, num_tokens, dim, seq_len, depth, emb_dim = None, memory_layers = None, mem_len = None, lmem_len = None, heads = 8, gru_gated_residual = True, mogrify_gru = False, attn_dropout = 0., ff_glu = False, ff_dropout = 0., attn_layer_dropout = 0., one_kv_head = False):
         super().__init__()
         emb_dim = default(emb_dim, dim)
         mem_len = default(mem_len, seq_len)
-        lmem_len = default(lmem_len, mem_len // lmem_ratio)
+        lmem_len = default(mem_len, lmem_len)
         memory_layers = default(memory_layers, list(range(1, depth + 1)))
 
-        assert mem_len >= seq_len, 'length of memory should be at least the sequence length'
-        assert lmem_len >= (mem_len // lmem_ratio), f'length of compressed memory should be at least the memory length divided by the compression ratio {int(mem_len // lmem_ratio)}'
+        assert mem_len >= seq_len, 'length of short-term memory should be at least the sequence length'
         assert all([layer > 0 and layer <= depth for layer in memory_layers]), 'one of the indicated memory layers is invalid'
 
         self.seq_len = seq_len
@@ -263,7 +257,7 @@ class MemoryTransformerXL(nn.Module):
 
         wrapper = partial(GRUGating, dim, mogrify = mogrify_gru) if gru_gated_residual else Residual
 
-        self.attn_layers = nn.ModuleList([wrapper(PreNorm(dim, SelfAttention(dim, seq_len, mem_len, lmem_len, lmem_ratio, heads, dropout = attn_layer_dropout, attn_dropout = attn_dropout, reconstruction_attn_dropout = reconstruction_attn_dropout, one_kv_head = one_kv_head))) for _ in range(depth)])
+        self.attn_layers = nn.ModuleList([wrapper(PreNorm(dim, SelfAttention(dim, seq_len, mem_len, lmem_len, heads, dropout = attn_layer_dropout, attn_dropout = attn_dropout, one_kv_head = one_kv_head))) for _ in range(depth)])
         self.ff_layers = nn.ModuleList([wrapper(PreNorm(dim, FeedForward(dim, dropout = ff_dropout, glu = ff_glu))) for _ in range(depth)])
         
     def forward(self, x, memories = None, mask = None):
