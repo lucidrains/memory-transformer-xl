@@ -49,16 +49,6 @@ def iterate_tensor(t):
     for ind in range(length):
         yield t[ind]
 
-# full attention for calculating auxiliary reconstruction loss
-
-def full_attn(q, k, v, dropout_fn = None):
-    *_, dim = q.shape
-    dots = torch.einsum('bhid,bhjd->bhij', q, k) * (dim ** -0.5)
-    attn = dots.softmax(dim=-1)
-    if dropout_fn is not None:
-        attn = dropout_fn(attn)
-    return torch.einsum('bhij,bhjd->bhid', attn, v)
-
 # helper classes
 
 class Residual(nn.Module):
