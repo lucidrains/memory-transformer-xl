@@ -94,7 +94,7 @@ for i in tqdm.tqdm(range(NUM_BATCHES), mininterval=10., desc='training'):
     grad_accum_every = BATCH_SIZE / MAX_BATCH_SIZE
 
     for loss, is_last in model(next(train_loader), max_batch_size = MAX_BATCH_SIZE, return_loss = True):
-        (loss / grad_accum_every).backward()
+        (loss / grad_accum_every).backward(retain_graph = True)
 
         print(f'training loss: {loss.item():.4f}')
 

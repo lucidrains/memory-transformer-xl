@@ -28,6 +28,13 @@ def default(x, val):
 def max_neg_value(tensor):
     return -torch.finfo(tensor.dtype).max
 
+def reshape_dim(t, dim, split_dims):
+    shape = list(t.shape)
+    num_dims = len(shape)
+    dim = (dim + num_dims) % num_dims
+    shape[dim:dim+1] = split_dims
+    return t.reshape(shape)
+
 def split_at_index(dim, index, t):
     pre_slices = (slice(None),) * dim
     l = (*pre_slices, slice(None, index))
@@ -56,10 +63,7 @@ class Residual(nn.Module):
         super().__init__()
         self.fn = fn
     def forward(self, x, **kwargs):
-        out = self.fn(x, **kwargs)
-        out = cast_tuple(out)
-        ret = (out[0] + x), *out[1:]
-        return ret
+        return self.fn(x, **kwargs)
 
 class GRUGating(nn.Module):
     def __init__(self, dim, fn, mogrify = False):
@@ -70,9 +74,10 @@ class GRUGating(nn.Module):
         self.mogrify = Mogrifier(dim, factorize_k = dim // 4) if mogrify else None
 
     def forward(self, x, **kwargs):
-        batch, dim = x.shape[0], self.dim
-        out = self.fn(x, **kwargs)
-        (y, *rest) = cast_tuple(out)
+        shape = x.shape
+        dim = self.dim
+
+        y = self.fn(x, **kwargs)
 
         if self.mogrify is not None:
             y, x = self.mogrify(y, x)
@@ -82,9 +87,7 @@ class GRUGating(nn.Module):
             x.reshape(1, -1, dim)
         )
 
-        gated_output = gated_output.reshape(batch, -1, dim)
-        ret = gated_output, *rest
-        return ret
+        return gated_output.reshape(shape)
 
 class PreNorm(nn.Module):
     def __init__(self, dim, fn):
@@ -154,12 +157,12 @@ class SelfAttention(nn.Module):
     def forward(self, x, memories = None, pos_emb = None, input_mask = None, calc_memory = True, **kwargs):
         b, t, e, h, dim_h = *x.shape, self.heads, self.dim_head
 
-        mem = lmem = None
-        if memories is not None:
-            mem, lmem = memories
+        memories = default(memories, (None, None))
+        mem, lmem = memories
 
-        mem = default(mem, lambda: torch.empty(b, 0, e, **to(x)))
-        lmem = default(lmem, lambda: torch.empty(b, 0, e, **to(x)))
+        init_mem = lambda: torch.empty(b, 0, e, **to(x))
+        mem = default(mem, init_mem)
+        lmem = default(lmem, init_mem)
 
         mem_len = mem.shape[1]
         lmem_len = lmem.shape[1]
@@ -170,7 +173,7 @@ class SelfAttention(nn.Module):
         kv_len = kv_input.shape[1]
         k, v = self.to_kv(kv_input).chunk(2, dim=-1)
 
-        merge_heads = lambda x: x.reshape(*x.shape[:2], -1, dim_h).transpose(1, 2)
+        merge_heads = lambda x: reshape_dim(x, -1, (-1, dim_h)).transpose(1, 2)
         q, k, v = map(merge_heads, (q, k, v))
 
         k, v = map(lambda x: x.expand(-1, h, -1, -1), (k, v))
@@ -198,23 +201,68 @@ class SelfAttention(nn.Module):
 
         out = torch.einsum('bhij,bhjd->bhid', attn, v)
         out = out.transpose(1, 2).reshape(b, t, -1)
-        logits = self.to_out(out)
-        logits = self.dropout(logits)
+        out = self.to_out(out)
 
-        new_mem = mem
-        new_lmem = lmem
+        return self.dropout(out)
 
-        if self.seq_len > t or not calc_memory:
-            return logits, Memory(new_mem, new_lmem)
+# memory attention network
 
-        # calculate memory and compressed memory
+class MemoryAttentionNetwork(nn.Module):
+    def __init__(self, dim, num_memory_depth, mem_len, lmem_len, heads = 8):
+        super().__init__()
+        self.num_memory_depth = num_memory_depth
+        self.mem_len = mem_len
+        self.lmem_len = lmem_len
 
-        old_mem, new_mem = split_at_index(1, -self.mem_len, torch.cat((mem, x), dim=1))
+        dim_head = dim // heads
+        self.dim_head = dim_head
+        self.init_lmem = nn.Parameter(torch.zeros(num_memory_depth, 1, lmem_len, dim))
 
-        if old_mem.shape[1] != 0 and self.lmem_len > 0:
-            pass
+        self.to_q = nn.Parameter(torch.randn(num_memory_depth, dim, dim))
+        self.to_kv = nn.Parameter(torch.randn(num_memory_depth, dim, 2 * dim))
+        self.to_out = nn.Parameter(torch.randn(num_memory_depth, dim, dim))
 
-        return logits, Memory(new_mem, new_lmem)
+        self.rezero_g = nn.Parameter(torch.zeros(num_memory_depth, 1, 1, 1))
+
+    def forward(self, lmem, smem, hiddens):
+        hiddens = hiddens.detach()
+        batch, dim_head = lmem.shape[1], self.dim_head
+
+        if lmem.shape[2] == 0:
+            lmem = self.init_lmem.expand(-1, batch, -1, -1)
+
+        # clone weights to avoid inplace error
+
+        w_q, w_kv, w_out, w_rezero = map(torch.clone, (self.to_q, self.to_kv, self.to_out, self.rezero_g))
+
+        # use efficient linear attention for updating long term memory
+
+        q = torch.einsum('mbnd,mde->mbne', lmem, w_q)
+
+        kv_input = torch.cat((lmem, smem, hiddens), dim=2)
+        k, v = torch.einsum('mbnd,mde->mbne', kv_input, w_kv).chunk(2, dim=-1)
+
+        q, k, v = map(lambda t: reshape_dim(t, -1, (-1, dim_head)).transpose(2, 3), (q, k, v))
+
+        q = q.softmax(dim=-1)
+        k = k.softmax(dim=-2)
+
+        context = torch.einsum('mbhnd,mbhne->mbhde', k, v)
+        out = torch.einsum('mbhnd,mbhde->mbhne', q, context)
+
+        out = out.transpose(2, 3).reshape_as(lmem)
+        next_lmem = torch.einsum('mbnd,mde->mbne', out, w_out)
+
+        # update the memory with rezero gating for now
+        # will update to use mogrifier
+
+        next_lmem = next_lmem * w_rezero + lmem
+
+        # fifo queue the short term memory
+        _, next_mem = split_at_index(2, -self.mem_len, torch.cat((smem, hiddens), dim=2))
+        next_mem = next_mem.detach()
+
+        return Memory(short = next_mem, long = next_lmem)
 
 # transformer
 
@@ -229,6 +277,7 @@ class MemoryTransformerXL(nn.Module):
         assert mem_len >= seq_len, 'length of short-term memory should be at least the sequence length'
         assert all([layer > 0 and layer <= depth for layer in memory_layers]), 'one of the indicated memory layers is invalid'
 
+        self.mem_len = mem_len
         self.seq_len = seq_len
 
         self.depth = depth
@@ -250,6 +299,8 @@ class MemoryTransformerXL(nn.Module):
         self.attn_layers = nn.ModuleList([wrapper(PreNorm(dim, SelfAttention(dim, seq_len, mem_len, lmem_len, heads, dropout = attn_layer_dropout, attn_dropout = attn_dropout, one_kv_head = one_kv_head))) for _ in range(depth)])
         self.ff_layers = nn.ModuleList([wrapper(PreNorm(dim, FeedForward(dim, dropout = ff_dropout, glu = ff_glu))) for _ in range(depth)])
         
+        self.memory_network = MemoryAttentionNetwork(dim, len(self.memory_layers), mem_len, lmem_len)
+
     def forward(self, x, memories = None, mask = None):
         x = self.token_emb(x)
         x = self.to_model_dim(x)
@@ -257,40 +308,38 @@ class MemoryTransformerXL(nn.Module):
 
         assert t <= self.seq_len, f'input contains a sequence length {t} that is greater than the designated maximum sequence length {self.seq_len}'
 
-        mem = lmem = None
-        if memories is not None:
-            mem, lmem = memories
+        memories = default(memories, (None, None))
+        mem, lmem = memories
 
         num_memory_layers = len(self.memory_layers)
-        mem = default(mem, lambda: torch.empty(num_memory_layers, b, 0, d, **to(x)))
-        lmem = default(lmem, lambda: torch.empty(num_memory_layers, b, 0, d, **to(x)))
+        init_mem = lambda: torch.empty(num_memory_layers, b, 0, d, **to(x))
 
-        total_len = mem.shape[2] + lmem.shape[2] + self.seq_len
+        mem = default(mem, init_mem)
+        lmem = default(lmem, init_mem)
+
+        mem_len, lmem_len = map(lambda t: t.shape[2], (mem, lmem))
+        total_len = mem_len + lmem_len + self.seq_len
+
         pos_emb = self.pos_emb[:, (self.seq_len - t):total_len]
-
-        next_mem = []
-        next_lmem = []
-
         mem_iter, lmem_iter = map(iterate_tensor, (mem, lmem))
+
+        hiddens = []
 
         for ind, (attn, ff) in enumerate(zip(self.attn_layers, self.ff_layers)):
             layer_num = ind + 1
             use_memory = layer_num in self.memory_layers
-
-            memories = None
-            if use_memory:
-                memories = (next(mem_iter), next(lmem_iter))
-
-            x, (mem_out, lmem_out) = attn(x, memories = memories, calc_memory = use_memory, input_mask = mask, pos_emb = pos_emb)
-            x, = ff(x)
+            memories = map(next, (mem_iter, lmem_iter)) if use_memory else None
 
             if use_memory:
-                next_mem.append(mem_out)
-                next_lmem.append(lmem_out)
+                hiddens.append(x)
 
+            x = attn(x, memories = memories, calc_memory = use_memory, input_mask = mask, pos_emb = pos_emb)
+            x = ff(x)
+
+        hiddens = torch.stack(hiddens)
         out = self.to_logits(x)
 
-        next_mem, next_lmem = map(torch.stack, (next_mem, next_lmem))
-        next_mem, next_lmem = map(torch.detach, (next_mem, next_lmem))
+        # calculate next memory state
 
-        return out, Memory(short = next_mem, long = next_lmem)
+        next_memory = self.memory_network(lmem, mem, hiddens)
+        return out, next_memory
