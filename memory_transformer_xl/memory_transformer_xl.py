@@ -218,6 +218,8 @@ class MemoryAttentionNetwork(nn.Module):
         self.dim_head = dim_head
         self.init_lmem = nn.Parameter(torch.zeros(num_memory_depth, 1, lmem_len, dim))
 
+        self.norm = nn.LayerNorm(dim, elementwise_affine = False)
+
         self.to_q = nn.Parameter(torch.randn(num_memory_depth, dim, dim))
         self.to_kv = nn.Parameter(torch.randn(num_memory_depth, dim, 2 * dim))
         self.to_out = nn.Parameter(torch.randn(num_memory_depth, dim, dim))
@@ -237,9 +239,10 @@ class MemoryAttentionNetwork(nn.Module):
 
         # use efficient linear attention for updating long term memory
 
-        q = torch.einsum('mbnd,mde->mbne', lmem, w_q)
+        normed_lmem = self.norm(lmem)
+        q = torch.einsum('mbnd,mde->mbne', normed_lmem, w_q)
 
-        kv_input = torch.cat((lmem, smem, hiddens), dim=2)
+        kv_input = torch.cat((normed_lmem, smem, hiddens), dim=2)
         k, v = torch.einsum('mbnd,mde->mbne', kv_input, w_kv).chunk(2, dim=-1)
 
         q, k, v = map(lambda t: reshape_dim(t, -1, (-1, dim_head)).transpose(2, 3), (q, k, v))
@@ -267,7 +270,7 @@ class MemoryAttentionNetwork(nn.Module):
 # transformer
 
 class MemoryTransformerXL(nn.Module):
-    def __init__(self, num_tokens, dim, seq_len, depth, emb_dim = None, memory_layers = None, mem_len = None, lmem_len = None, heads = 8, gru_gated_residual = True, mogrify_gru = False, attn_dropout = 0., ff_glu = False, ff_dropout = 0., attn_layer_dropout = 0., one_kv_head = False):
+    def __init__(self, num_tokens, dim, seq_len, depth, emb_dim = None, memory_layers = None, mem_len = None, lmem_len = None, heads = 8, gru_gated_residual = False, mogrify_gru = False, attn_dropout = 0., ff_glu = False, ff_dropout = 0., attn_layer_dropout = 0., one_kv_head = False):
         super().__init__()
         emb_dim = default(emb_dim, dim)
         mem_len = default(mem_len, seq_len)
