@@ -273,7 +273,8 @@ class MemoryAttentionNetwork(nn.Module):
 
         # feedforward for extra good measure
 
-        ff_out, ff_gate = torch.einsum('mbnd,mde->mbne', out, ff_w1).chunk(2, dim=-1)
+        normed_out = self.norm(out)
+        ff_out, ff_gate = torch.einsum('mbnd,mde->mbne', normed_out, ff_w1).chunk(2, dim=-1)
         ff_out = self.act(ff_gate) * ff_out
         ff_out = torch.einsum('mbnd,mde->mbne', ff_out, ff_w2)
 
