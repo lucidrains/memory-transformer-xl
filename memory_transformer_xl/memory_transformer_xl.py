@@ -362,6 +362,10 @@ class MemoryTransformerXL(nn.Module):
         out = self.to_logits(x)
 
         # calculate next memory state
+        # only push hidden to short term memory if input sequence length is full
+
+        if t < self.mem_len:
+            return out, Memory(short = mem, long = lmem)
 
         next_memory = self.memory_network(lmem, mem, hiddens)
         return out, next_memory

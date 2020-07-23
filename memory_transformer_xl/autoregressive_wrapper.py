@@ -71,7 +71,7 @@ class AutoregressiveWrapper(nn.Module):
         *prime_masks, mask = mask.split(self.seq_len, dim=1)
 
         for prime, prime_mask in zip(primes, prime_masks):
-            _, mem, _ = self.net(prime, memories = mem, mask = prime_mask, **kwargs)
+            _, mem = self.net(prime, memories = mem, mask = prime_mask, **kwargs)
 
         # generate until hit sequence length
 
