@@ -105,7 +105,7 @@ class AutoregressiveWrapper(nn.Module):
         self.net.train(was_training)
         return out
 
-    def forward(self, x, max_batch_size = None, return_loss = False, **kwargs):
+    def forward(self, x, max_batch_size = None, return_loss = False, truncate_every = None, **kwargs):
         pad = partial(pad_sequence, batch_first = True, padding_value = self.pad_value)
 
         if not return_loss:
@@ -138,15 +138,16 @@ class AutoregressiveWrapper(nn.Module):
         grad_accumulate_every = math.ceil(x.shape[0] / max_batch_size)
         mems = [None] * grad_accumulate_every
 
-        for xi_seg, xo_seg, mask_seg in zip(xi, xo, mask):
+        for ind, (xi_seg, xo_seg, mask_seg) in enumerate(zip(xi, xo, mask)):
             xi_seg, xo_seg = map(split_batch_fn, (xi_seg, xo_seg))
             mask_seg = split_batch_fn(mask_seg) if mask_seg is not None else ((None,) * grad_accumulate_every)
+            truncate = truncate_every is not None and ((ind + 1) % truncate_every) == 0
 
             new_mems = []
             for ind, (xi_seg_b, xo_seg_b, mask_seg_b, mem) in enumerate(zip(xi_seg, xo_seg, mask_seg, mems)):
                 is_last = ind == (grad_accumulate_every - 1)
 
-                logits, new_mem = self.net(xi_seg_b, mask = mask_seg_b, memories = mem, **kwargs)
+                logits, new_mem = self.net(xi_seg_b, mask = mask_seg_b, memories = mem, detach_lmem = truncate, **kwargs)
                 new_mems.append(new_mem)
 
                 loss = F.cross_entropy(logits.transpose(1, 2), xo_seg_b, ignore_index = self.ignore_index)

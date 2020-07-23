@@ -236,8 +236,10 @@ class MemoryAttentionNetwork(nn.Module):
         self.ff_w2 = init_parameter((num_memory_depth, dim * 4, dim * 2), dim)
         self.act = GELU()
 
-    def forward(self, lmem, smem, hiddens):
-        hiddens, lmem = hiddens.detach(), lmem.detach()
+    def forward(self, lmem, smem, hiddens, detach_lmem = False):
+        hiddens = hiddens.detach()
+        if detach_lmem:
+            lmem = lmem.detach()
         batch, dim_head, mem_depth = lmem.shape[1], self.dim_head, self.num_memory_depth
 
         if lmem.shape[2] == 0:
@@ -324,7 +326,7 @@ class MemoryTransformerXL(nn.Module):
 
         self.memory_network = MemoryAttentionNetwork(dim, len(self.memory_layers), mem_len, lmem_len)
 
-    def forward(self, x, memories = None, mask = None):
+    def forward(self, x, memories = None, mask = None, detach_lmem = False):
         x = self.token_emb(x)
         x = self.to_model_dim(x)
         b, t, d = x.shape
@@ -368,5 +370,5 @@ class MemoryTransformerXL(nn.Module):
         if t < self.mem_len:
             return out, Memory(short = mem, long = lmem)
 
-        next_memory = self.memory_network(lmem, mem, hiddens)
+        next_memory = self.memory_network(lmem, mem, hiddens, detach_lmem = detach_lmem)
         return out, next_memory
