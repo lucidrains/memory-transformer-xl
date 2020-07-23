@@ -2,28 +2,60 @@
 
 A combination of Transformer-XL with ideas from Memory Transformers. While in Transformer-XL the memory is just a FIFO queue, this repository will attempt to update the memory (queries) against the incoming hidden states (keys / values) with a memory attention network. The memory attention network will utilize linear attention to be performant, followed by GRU gating, and will be backpropagated through time to learn how to properly store and discard new/old memory.
 
+## Install
+
+```bash
+$ pip install memory-transformer-xl
+```
+
+## Usage
+
+```python
+import torch
+from memory_transformer_xl import MemoryTransformerXL
+
+model = MemoryTransformerXL(
+    num_tokens = 20000,
+    dim = 1024,
+    heads = 8,
+    depth = 8,
+    seq_len = 512,
+    mem_len = 256,            # short term memory (the memory from transformer-xl)
+    lmem_len = 256,           # long term memory (memory attention network attending to short term memory and hidden activations)
+    memory_layers = [6,7,8]   # which layers to use memory, only the later layers are actually needed
+)
+
+x1 = torch.randint(0, 20000, (1, 512))
+logits1, mem1 = model(x1)
+
+x2 = torch.randint(0, 20000, (1, 512))
+logits2, mem2 = model(x2, memories = mem1)
+
+# and so on with carrying over memories...
+```
+
 ## Citations
 
 ```bibtex
 @article{Dai_2019,
-   title={Transformer-XL: Attentive Language Models beyond a Fixed-Length Context},
-   url={http://dx.doi.org/10.18653/v1/P19-1285},
-   DOI={10.18653/v1/p19-1285},
+   title  = {Transformer-XL: Attentive Language Models beyond a Fixed-Length Context},
+   url    = {http://dx.doi.org/10.18653/v1/P19-1285},
+   DOI    = {10.18653/v1/p19-1285},
    journal={Proceedings of the 57th Annual Meeting of the Association for Computational Linguistics},
-   publisher={Association for Computational Linguistics},
-   author={Dai, Zihang and Yang, Zhilin and Yang, Yiming and Carbonell, Jaime and Le, Quoc and Salakhutdinov, Ruslan},
-   year={2019}
+   publisher = {Association for Computational Linguistics},
+   author = {Dai, Zihang and Yang, Zhilin and Yang, Yiming and Carbonell, Jaime and Le, Quoc and Salakhutdinov, Ruslan},
+   year = {2019}
 }
 ```
 
 ```bibtex
 @misc{burtsev2020memory,
-    title={Memory Transformer},
-    author={Mikhail S. Burtsev and Grigory V. Sapunov},
-    year={2020},
-    eprint={2006.11527},
-    archivePrefix={arXiv},
-    primaryClass={cs.CL}
+    title   = {Memory Transformer},
+    author  = {Mikhail S. Burtsev and Grigory V. Sapunov},
+    year    = {2020},
+    eprint  = {2006.11527},
+    archivePrefix = {arXiv},
+    primaryClass = {cs.CL}
 }
 ```
 

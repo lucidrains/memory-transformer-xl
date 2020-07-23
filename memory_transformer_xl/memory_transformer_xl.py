@@ -283,8 +283,11 @@ class MemoryAttentionNetwork(nn.Module):
         next_lmem = ff_out_gate.sigmoid() * out + ff_out
 
         # fifo queue the short term memory
-        short_memory_and_hiddens = torch.cat((smem, hiddens), dim=2)
-        _, next_mem = split_at_index(2, -self.mem_len, short_memory_and_hiddens)
+
+        next_mem = smem
+        if self.mem_len > 0:
+            short_memory_and_hiddens = torch.cat((smem, hiddens), dim=2)
+            _, next_mem = split_at_index(2, -self.mem_len, short_memory_and_hiddens)
 
         return Memory(short = next_mem.detach(), long = next_lmem)
 
@@ -299,7 +302,6 @@ class MemoryTransformerXL(nn.Module):
 
         memory_layers = default(memory_layers, list(range(1, depth + 1)))
 
-        assert mem_len >= seq_len, 'length of short-term memory should be at least the sequence length'
         assert all([layer > 0 and layer <= depth for layer in memory_layers]), 'one of the indicated memory layers is invalid'
 
         self.mem_len = mem_len

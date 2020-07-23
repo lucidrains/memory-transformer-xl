@@ -5,10 +5,10 @@ setup(
   packages = find_packages(exclude=['examples']),
   version = '0.0.1',
   license='MIT',
-  description = 'Implementation of Compressive Transformer in Pytorch',
+  description = 'Memory Transformer-XL, a variant of Transformer-XL that uses linear attention update long term memory',
   author = 'Phil Wang',
   author_email = 'lucidrains@gmail.com',
-  url = 'https://github.com/lucidrains/compressive-transformer-pytorch',
+  url = 'https://github.com/lucidrains/memory-transformer-xl',
   keywords = ['attention mechanism', 'artificial intelligence', 'transformer', 'deep learning'],
   install_requires=[
       'torch',
