@@ -232,6 +232,10 @@ class MemoryAttentionNetwork(nn.Module):
         self.to_kv = init_parameter((num_memory_depth, dim, 2 * dim), dim)
         self.to_out = init_parameter((num_memory_depth, dim, dim * 2), dim)
 
+        self.ff_w1 = init_parameter((num_memory_depth, dim, dim * 4 * 2), dim)
+        self.ff_w2 = init_parameter((num_memory_depth, dim * 4, dim), dim)
+        self.act = GELU()
+
     def forward(self, lmem, smem, hiddens):
         hiddens, lmem = hiddens.detach(), lmem.detach()
         batch, dim_head, mem_depth = lmem.shape[1], self.dim_head, self.num_memory_depth
@@ -241,7 +245,7 @@ class MemoryAttentionNetwork(nn.Module):
 
         # clone weights to avoid inplace error
 
-        w_q, w_kv, w_out = map(torch.clone, (self.to_q, self.to_kv, self.to_out))
+        w_q, w_kv, w_out, ff_w1, ff_w2 = map(torch.clone, (self.to_q, self.to_kv, self.to_out, self.ff_w1, self.ff_w2))
 
         # use efficient linear attention for updating long term memory
 
@@ -261,10 +265,19 @@ class MemoryAttentionNetwork(nn.Module):
         out = torch.einsum('mbhnd,mbhde->mbhne', q, context)
 
         out = out.transpose(2, 3).reshape_as(lmem)
-        next_lmem, w_gate = torch.einsum('mbnd,mde->mbne', out, w_out).chunk(2, dim=-1)
+        out, w_gate = torch.einsum('mbnd,mde->mbne', out, w_out).chunk(2, dim=-1)
 
-        # GRU gating with rezero
-        next_lmem = w_gate.sigmoid() * lmem + next_lmem
+        # GRU gate the input
+
+        out = w_gate.sigmoid() * lmem + out
+
+        # feedforward for extra good measure
+
+        ff_out, ff_gate = torch.einsum('mbnd,mde->mbne', out, ff_w1).chunk(2, dim=-1)
+        ff_out = self.act(ff_gate) * ff_out
+        ff_out = torch.einsum('mbnd,mde->mbne', ff_out, ff_w2)
+
+        next_lmem = ff_out + out
 
         # fifo queue the short term memory
         _, next_mem = split_at_index(2, -self.mem_len, torch.cat((smem, hiddens), dim=2))
