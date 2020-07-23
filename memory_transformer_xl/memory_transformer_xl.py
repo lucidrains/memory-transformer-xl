@@ -233,7 +233,7 @@ class MemoryAttentionNetwork(nn.Module):
         self.to_out = init_parameter((num_memory_depth, dim, dim * 2), dim)
 
         self.ff_w1 = init_parameter((num_memory_depth, dim, dim * 4 * 2), dim)
-        self.ff_w2 = init_parameter((num_memory_depth, dim * 4, dim), dim)
+        self.ff_w2 = init_parameter((num_memory_depth, dim * 4, dim * 2), dim)
         self.act = GELU()
 
     def forward(self, lmem, smem, hiddens):
@@ -276,15 +276,15 @@ class MemoryAttentionNetwork(nn.Module):
         normed_out = self.norm(out)
         ff_out, ff_gate = torch.einsum('mbnd,mde->mbne', normed_out, ff_w1).chunk(2, dim=-1)
         ff_out = self.act(ff_gate) * ff_out
-        ff_out = torch.einsum('mbnd,mde->mbne', ff_out, ff_w2)
+        ff_out, ff_out_gate = torch.einsum('mbnd,mde->mbne', ff_out, ff_w2).chunk(2, dim=-1)
 
-        next_lmem = ff_out + out
+        next_lmem = ff_out_gate.sigmoid() * out + ff_out
 
         # fifo queue the short term memory
-        _, next_mem = split_at_index(2, -self.mem_len, torch.cat((smem, hiddens), dim=2))
-        next_mem = next_mem.detach()
+        short_memory_and_hiddens = torch.cat((smem, hiddens), dim=2)
+        _, next_mem = split_at_index(2, -self.mem_len, short_memory_and_hiddens)
 
-        return Memory(short = next_mem, long = next_lmem)
+        return Memory(short = next_mem.detach(), long = next_lmem)
 
 # transformer
 
