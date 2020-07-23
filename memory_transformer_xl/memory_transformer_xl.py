@@ -4,6 +4,7 @@ import torch.nn.functional as F
 
 from mogrifier import Mogrifier
 
+import math
 from collections import namedtuple
 from functools import partial
 from inspect import isfunction
@@ -55,6 +56,12 @@ def iterate_tensor(t):
     length = t.shape[0]
     for ind in range(length):
         yield t[ind]
+
+def init_parameter(shape, dim):
+    t = torch.zeros(shape)
+    std = 1 / math.sqrt(dim)
+    t.uniform_(-std, std)
+    return nn.Parameter(t)
 
 # helper classes
 
@@ -217,34 +224,32 @@ class MemoryAttentionNetwork(nn.Module):
         dim_head = dim // heads
         self.dim_head = dim_head
 
-        self.init_lmem = nn.Parameter(torch.zeros(1, 1, lmem_len, dim))
+        self.init_lmem = init_parameter((1, 1, lmem_len, dim), dim)
 
         self.norm = nn.LayerNorm(dim, elementwise_affine = False)
 
-        self.to_q = nn.Parameter(torch.randn(dim, dim))
-        self.to_kv = nn.Parameter(torch.randn(dim, 2 * dim))
-        self.to_out = nn.Parameter(torch.randn(dim, dim))
-
-        self.rezero_g = nn.Parameter(torch.tensor(0.))
+        self.to_q = init_parameter((num_memory_depth, dim, dim), dim)
+        self.to_kv = init_parameter((num_memory_depth, dim, 2 * dim), dim)
+        self.to_out = init_parameter((num_memory_depth, dim, dim * 2), dim)
 
     def forward(self, lmem, smem, hiddens):
-        hiddens = hiddens.detach()
+        hiddens, lmem = hiddens.detach(), lmem.detach()
         batch, dim_head, mem_depth = lmem.shape[1], self.dim_head, self.num_memory_depth
 
         if lmem.shape[2] == 0:
-            lmem = self.init_lmem.expand(mem_depth, batch, -1, -1)
+            lmem = self.init_lmem.expand(mem_depth, batch, -1, -1).clone()
 
         # clone weights to avoid inplace error
 
-        w_q, w_kv, w_out, rezero_g = map(torch.clone, (self.to_q, self.to_kv, self.to_out, self.rezero_g))
+        w_q, w_kv, w_out = map(torch.clone, (self.to_q, self.to_kv, self.to_out))
 
         # use efficient linear attention for updating long term memory
 
         normed_lmem = self.norm(lmem)
-        q = torch.einsum('mbnd,de->mbne', normed_lmem, w_q)
+        q = torch.einsum('mbnd,mde->mbne', normed_lmem, w_q)
 
         kv_input = torch.cat((normed_lmem, smem, hiddens), dim=2)
-        k, v = torch.einsum('mbnd,de->mbne', kv_input, w_kv).chunk(2, dim=-1)
+        k, v = torch.einsum('mbnd,mde->mbne', kv_input, w_kv).chunk(2, dim=-1)
 
         q, k, v = map(lambda t: reshape_dim(t, -1, (-1, dim_head)).transpose(2, 3), (q, k, v))
         q, k = map(lambda t: t * dim_head ** -0.25, (q, k))
@@ -256,12 +261,10 @@ class MemoryAttentionNetwork(nn.Module):
         out = torch.einsum('mbhnd,mbhde->mbhne', q, context)
 
         out = out.transpose(2, 3).reshape_as(lmem)
-        next_lmem = torch.einsum('mbnd,de->mbne', out, w_out)
+        next_lmem, w_gate = torch.einsum('mbnd,mde->mbne', out, w_out).chunk(2, dim=-1)
 
-        # update the memory with rezero gating for now
-        # will update to use mogrifier
-
-        next_lmem = next_lmem * rezero_g + lmem
+        # GRU gating with rezero
+        next_lmem = w_gate.sigmoid() * lmem + next_lmem
 
         # fifo queue the short term memory
         _, next_mem = split_at_index(2, -self.mem_len, torch.cat((smem, hiddens), dim=2))
