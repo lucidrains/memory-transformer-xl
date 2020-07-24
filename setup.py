@@ -3,7 +3,7 @@ from setuptools import setup, find_packages
 setup(
   name = 'memory-transformer-xl',
   packages = find_packages(exclude=['examples']),
-  version = '0.0.3',
+  version = '0.0.4',
   license='MIT',
   description = 'Memory Transformer-XL, a variant of Transformer-XL that uses linear attention update long term memory',
   author = 'Phil Wang',

@@ -168,7 +168,7 @@ class FeedForward(nn.Module):
 # attention.
 
 class SelfAttention(nn.Module):
-    def __init__(self, dim, seq_len, mem_len, lmem_len, heads = 8, attn_dropout = 0., dropout = 0., memory_attn_dropout = 0., one_kv_head = False):
+    def __init__(self, dim, seq_len, mem_len, lmem_len, heads = 8, attn_dropout = 0., dropout = 0., memory_attn_dropout = 0., one_kv_head = False, num_mem_kv = 4):
         super().__init__()
         assert (dim % heads) == 0, 'dimension must be divisible by the number of heads'
 
@@ -185,6 +185,8 @@ class SelfAttention(nn.Module):
         self.to_kv = nn.Linear(dim, kv_dim * 2, bias = False)
         self.to_out = nn.Linear(dim, dim)
 
+        self.mem_kv = init_parameter((1, num_mem_kv, dim), dim)
+
         self.attn_dropout = nn.Dropout(attn_dropout)
         self.dropout = nn.Dropout(dropout)
 
@@ -199,13 +201,13 @@ class SelfAttention(nn.Module):
         init_mem = lambda: torch.empty(b, 0, e, **to(x))
         mem = default(mem, init_mem)
         lmem = default(lmem, init_mem)
+        mem_kv = self.mem_kv.expand(b, -1, -1)
 
-        mem_len = mem.shape[1]
-        lmem_len = lmem.shape[1]
+        mem_len, lmem_len, mem_kv_len = map(lambda t: t.shape[1], (mem, lmem, mem_kv))
 
         q = self.to_q(x)
 
-        kv_input = torch.cat((lmem, mem, x), dim=1)
+        kv_input = torch.cat((mem_kv, lmem, mem, x), dim=1)
         kv_len = kv_input.shape[1]
         k, v = self.to_kv(kv_input).chunk(2, dim=-1)
 
@@ -221,14 +223,15 @@ class SelfAttention(nn.Module):
             pos_emb = pos_emb[:, -kv_len:].type(q.dtype)
             pos_dots = torch.einsum('bhid,hjd->bhij', q, pos_emb) * self.scale
             pos_dots = shift(pos_dots)
+            pos_dots = F.pad(pos_dots, (dots.shape[-1] - pos_dots.shape[-1], 0), value = 0.)
             dots = dots + pos_dots
 
         if input_mask is not None:
             mask = input_mask[:, None, :, None] * input_mask[:, None, None, :]
-            mask = F.pad(mask, (mem_len + lmem_len, 0), value = True)
+            mask = F.pad(mask, (mem_len + lmem_len + mem_kv_len, 0), value = True)
             dots.masked_fill_(~mask, mask_value)
 
-        total_mem_len = mem_len + lmem_len
+        total_mem_len = mem_len + lmem_len + mem_kv_len
         mask = torch.ones(t, t + total_mem_len, **to(x)).triu_(diagonal = 1 + total_mem_len).bool()
         dots.masked_fill_(mask[None, None, ...], mask_value)
 
@@ -284,7 +287,7 @@ class LinearSelfAttention(nn.Module):
         return out
 
 class MemoryAttentionNetwork(nn.Module):
-    def __init__(self, dim, num_memory_depth, mem_len, lmem_len, heads = 4, num_attn_steps = 2):
+    def __init__(self, dim, num_memory_depth, mem_len, lmem_len, heads = 4, num_attn_steps = 2, num_mem_kv = 4):
         super().__init__()
         self.num_memory_depth = num_memory_depth
         self.mem_len = mem_len
@@ -295,14 +298,17 @@ class MemoryAttentionNetwork(nn.Module):
         self.dim_head = dim_head
 
         self.depth_emb = init_parameter((num_memory_depth, 1, 1, 1), dim)
-        self.init_lmem = init_parameter((1, lmem_len, dim), dim)
+        self.init_lmem = init_parameter((1, 1, dim), dim)
+        self.lmem_pos_emb = init_parameter((1, lmem_len, dim), dim)
+
+        self.mem_kv = init_parameter((1, num_mem_kv, dim), dim)
 
         self.attn = LinearSelfAttention(dim, num_memory_depth, heads = heads)
         self.gate = nBRC(dim, dim)
         self.num_attn_steps = num_attn_steps
 
     def forward(self, lmem, smem, hiddens, detach_lmem = False):
-        batch, dim, dim_head, mem_depth = lmem.shape[0], self.dim, self.dim_head, self.num_memory_depth
+        batch, dim, dim_head, mem_depth, lmem_len = lmem.shape[0], self.dim, self.dim_head, self.num_memory_depth, self.lmem_len
 
         # properly detach hidden state, and detach long term memory if truncate signal is given
 
@@ -314,14 +320,16 @@ class MemoryAttentionNetwork(nn.Module):
         # initialize long term memory state if none provided
 
         if lmem is None or lmem.shape[1] == 0:
-            lmem = self.init_lmem.clone().expand(batch, -1, -1)
+            lmem = self.init_lmem.clone().expand(batch, lmem_len, -1)
 
         # use efficient linear attention for updating long term memory
 
+        next_lmem = lmem + self.lmem_pos_emb
+
         hiddens_and_smem = torch.cat((smem, hiddens), dim=-2)
         all_hiddens = (hiddens_and_smem + self.depth_emb).transpose(0, 1).reshape(batch, -1, dim)
+        all_hiddens = torch.cat((all_hiddens, self.mem_kv.expand(batch, -1, -1)), dim=1)
 
-        next_lmem = lmem
         for _ in range(self.num_attn_steps):
             attn_out = self.attn(next_lmem, hiddens = all_hiddens)
             next_lmem = self.gate(attn_out, next_lmem)
@@ -334,7 +342,7 @@ class MemoryAttentionNetwork(nn.Module):
 # transformer
 
 class MemoryTransformerXL(nn.Module):
-    def __init__(self, num_tokens, dim, seq_len, depth, emb_dim = None, memory_layers = None, mem_len = None, lmem_len = None, heads = 8, gru_gated_residual = True, mogrify_gru = False, attn_dropout = 0., ff_glu = False, ff_dropout = 0., attn_layer_dropout = 0., one_kv_head = False):
+    def __init__(self, num_tokens, dim, seq_len, depth, emb_dim = None, memory_layers = None, mem_len = None, lmem_len = None, heads = 8, gru_gated_residual = True, mogrify_gru = False, attn_dropout = 0., ff_glu = False, ff_dropout = 0., attn_layer_dropout = 0., one_kv_head = False, num_mem_kv = 0):
         super().__init__()
         emb_dim = default(emb_dim, dim)
         mem_len = default(mem_len, seq_len)
@@ -363,10 +371,10 @@ class MemoryTransformerXL(nn.Module):
 
         wrapper = partial(GRUGating, dim, mogrify = mogrify_gru) if gru_gated_residual else Residual
 
-        self.attn_layers = nn.ModuleList([wrapper(PreNorm(dim, SelfAttention(dim, seq_len, mem_len, lmem_len, heads, dropout = attn_layer_dropout, attn_dropout = attn_dropout, one_kv_head = one_kv_head))) for _ in range(depth)])
+        self.attn_layers = nn.ModuleList([wrapper(PreNorm(dim, SelfAttention(dim, seq_len, mem_len, lmem_len, heads, dropout = attn_layer_dropout, attn_dropout = attn_dropout, one_kv_head = one_kv_head, num_mem_kv = num_mem_kv))) for _ in range(depth)])
         self.ff_layers = nn.ModuleList([wrapper(PreNorm(dim, FeedForward(dim, dropout = ff_dropout, glu = ff_glu))) for _ in range(depth)])
 
-        self.memory_network = MemoryAttentionNetwork(dim, len(self.memory_layers), mem_len, lmem_len)
+        self.memory_network = MemoryAttentionNetwork(dim, len(self.memory_layers), mem_len, lmem_len, num_mem_kv = num_mem_kv)
 
     def forward(self, x, memories = None, mask = None, detach_lmem = False):
         x = self.token_emb(x)
