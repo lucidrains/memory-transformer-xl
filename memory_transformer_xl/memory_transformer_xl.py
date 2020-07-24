@@ -252,26 +252,26 @@ class LinearSelfAttention(nn.Module):
         self.dim_head = dim // heads
         self.norm = nn.LayerNorm(dim, elementwise_affine = False)
 
-        self.to_q = init_parameter((depth, dim, dim), dim)
-        self.to_kv = init_parameter((depth, dim, 2 * dim), dim)
-        self.to_out = init_parameter((depth, dim, dim), dim)
+        self.to_q = init_parameter((dim, dim), dim)
+        self.to_kv = init_parameter((dim, 2 * dim), dim)
+        self.to_out = init_parameter((dim, dim), dim)
 
     def forward(self, x, smem = None, hiddens = None):
         dim_head = self.dim_head
         w_q, w_kv, w_out = map(torch.clone, (self.to_q, self.to_kv, self.to_out))
         
         normed_lmem = self.norm(x)
-        q = torch.einsum('mbnd,mde->mbne', normed_lmem, w_q)
+        q = torch.einsum('mbnd,de->mbne', normed_lmem, w_q)
 
         kv_input = torch.cat((normed_lmem, smem, hiddens), dim=2)
-        k, v = torch.einsum('mbnd,mde->mbne', kv_input, w_kv).chunk(2, dim=-1)
+        k, v = torch.einsum('mbnd,de->mbne', kv_input, w_kv).chunk(2, dim=-1)
 
         q, k, v = map(lambda t: reshape_dim(t, -1, (-1, dim_head)).transpose(-2, -3), (q, k, v))
 
-        out = full_attn(q, k, v)
+        out = linear_attn(q, k, v)
 
         out = out.transpose(2, 3).reshape_as(x)
-        out = torch.einsum('mbnd,mde->mbne', out, w_out)
+        out = torch.einsum('mbnd,de->mbne', out, w_out)
         return out
 
 class MemoryAttentionNetwork(nn.Module):
