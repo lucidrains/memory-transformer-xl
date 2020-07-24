@@ -77,7 +77,7 @@ class GRUGating(nn.Module):
         super().__init__()
         self.dim = dim
         self.fn = fn
-        self.gru = nn.GRU(dim, dim)
+        self.gru = nn.GRUCell(dim, dim)
         self.mogrify = Mogrifier(dim, factorize_k = dim // 4) if mogrify else None
 
     def forward(self, x, **kwargs):
@@ -89,9 +89,9 @@ class GRUGating(nn.Module):
         if self.mogrify is not None:
             y, x = self.mogrify(y, x)
 
-        gated_output, _ = self.gru(
-            y.reshape(1, -1, dim),
-            x.reshape(1, -1, dim)
+        gated_output = self.gru(
+            y.reshape(-1, dim),
+            x.reshape(-1, dim)
         )
 
         return gated_output.reshape(shape)
@@ -212,10 +212,70 @@ class SelfAttention(nn.Module):
 
         return self.dropout(out)
 
+# neuromodulated bistable recurrent cell
+
+class nBRC(nn.Module):
+    def __init__(self, dims, hidden_dims):
+        super().__init__()
+        self.Ua = nn.Linear(dims, hidden_dims)
+        self.Wa = nn.Linear(dims, hidden_dims)
+        self.Uc = nn.Linear(dims, hidden_dims)
+        self.Wc = nn.Linear(dims, hidden_dims)
+        self.U  = nn.Linear(dims, hidden_dims)
+
+    def forward(self, x, h):
+        l = lambda linear, tensor: F.linear(tensor, linear.weight.clone(), linear.bias.clone())
+
+        a = 1 + torch.tanh(l(self.Ua, x) + l(self.Wa, h))
+        c = torch.sigmoid(l(self.Uc, x) + l(self.Wc, h))
+        return c * h + (1 - c) * torch.tanh(l(self.U, x) + a * h)
+
 # memory attention network
 
+def linear_attn(q, k, v):
+    q = q.softmax(dim=-1)
+    k = k.softmax(dim=-2)
+
+    context = torch.einsum('mbhnd,mbhne->mbhde', k, v)
+    out = torch.einsum('mbhnd,mbhde->mbhne', q, context)
+    return out
+
+def full_attn(q, k, v):
+    dots = torch.einsum('mbhid,mbhjd->mbhij', q, k) * q.shape[-1] ** -0.5
+    dots = dots.softmax(dim=-1)
+    out = torch.einsum('mbhij,mbhjd->mbhid', dots, v)
+    return out
+
+class LinearSelfAttention(nn.Module):
+    def __init__(self, dim, depth, heads = 8):
+        super().__init__()
+        self.dim_head = dim // heads
+        self.norm = nn.LayerNorm(dim, elementwise_affine = False)
+
+        self.to_q = init_parameter((depth, dim, dim), dim)
+        self.to_kv = init_parameter((depth, dim, 2 * dim), dim)
+        self.to_out = init_parameter((depth, dim, dim), dim)
+
+    def forward(self, x, smem = None, hiddens = None):
+        dim_head = self.dim_head
+        w_q, w_kv, w_out = map(torch.clone, (self.to_q, self.to_kv, self.to_out))
+        
+        normed_lmem = self.norm(x)
+        q = torch.einsum('mbnd,mde->mbne', normed_lmem, w_q)
+
+        kv_input = torch.cat((normed_lmem, smem, hiddens), dim=2)
+        k, v = torch.einsum('mbnd,mde->mbne', kv_input, w_kv).chunk(2, dim=-1)
+
+        q, k, v = map(lambda t: reshape_dim(t, -1, (-1, dim_head)).transpose(-2, -3), (q, k, v))
+
+        out = full_attn(q, k, v)
+
+        out = out.transpose(2, 3).reshape_as(x)
+        out = torch.einsum('mbnd,mde->mbne', out, w_out)
+        return out
+
 class MemoryAttentionNetwork(nn.Module):
-    def __init__(self, dim, num_memory_depth, mem_len, lmem_len, heads = 8):
+    def __init__(self, dim, num_memory_depth, mem_len, lmem_len, heads = 4, num_attn_steps = 2):
         super().__init__()
         self.num_memory_depth = num_memory_depth
         self.mem_len = mem_len
@@ -224,63 +284,33 @@ class MemoryAttentionNetwork(nn.Module):
         dim_head = dim // heads
         self.dim_head = dim_head
 
-        self.init_lmem = init_parameter((1, 1, lmem_len, dim), dim)
+        self.init_lmem = init_parameter((num_memory_depth, 1, lmem_len, dim), dim)
 
-        self.norm = nn.LayerNorm(dim, elementwise_affine = False)
-
-        self.to_q = init_parameter((num_memory_depth, dim, dim), dim)
-        self.to_kv = init_parameter((num_memory_depth, dim, 2 * dim), dim)
-        self.to_out = init_parameter((num_memory_depth, dim, dim * 2), dim)
-
-        self.ff_w1 = init_parameter((num_memory_depth, dim, dim * 4 * 2), dim)
-        self.ff_w2 = init_parameter((num_memory_depth, dim * 4, dim * 2), dim)
-        self.act = GELU()
+        self.attn = LinearSelfAttention(dim, num_memory_depth, heads = heads)
+        self.gate = nBRC(dim, dim)
+        self.num_attn_steps = num_attn_steps
 
     def forward(self, lmem, smem, hiddens, detach_lmem = False):
-        hiddens = hiddens.detach()
-        if detach_lmem:
-            lmem = lmem.detach()
         batch, dim_head, mem_depth = lmem.shape[1], self.dim_head, self.num_memory_depth
 
-        if lmem.shape[2] == 0:
-            lmem = self.init_lmem.expand(mem_depth, batch, -1, -1).clone()
+        # properly detach hidden state, and detach long term memory if truncate signal is given
 
-        # clone weights to avoid inplace error
+        hiddens = hiddens.detach()
 
-        w_q, w_kv, w_out, ff_w1, ff_w2 = map(torch.clone, (self.to_q, self.to_kv, self.to_out, self.ff_w1, self.ff_w2))
+        if detach_lmem:
+            lmem = lmem.detach()
+
+        # initialize long term memory state if none provided
+
+        if lmem is None or lmem.shape[2] == 0:
+            lmem = self.init_lmem.clone().expand(-1, batch, -1, -1)
 
         # use efficient linear attention for updating long term memory
 
-        normed_lmem = self.norm(lmem)
-        q = torch.einsum('mbnd,mde->mbne', normed_lmem, w_q)
-
-        kv_input = torch.cat((normed_lmem, smem, hiddens), dim=2)
-        k, v = torch.einsum('mbnd,mde->mbne', kv_input, w_kv).chunk(2, dim=-1)
-
-        q, k, v = map(lambda t: reshape_dim(t, -1, (-1, dim_head)).transpose(2, 3), (q, k, v))
-        q, k = map(lambda t: t * dim_head ** -0.25, (q, k))
-
-        q = q.softmax(dim=-1)
-        k = k.softmax(dim=-2)
-
-        context = torch.einsum('mbhnd,mbhne->mbhde', k, v)
-        out = torch.einsum('mbhnd,mbhde->mbhne', q, context)
-
-        out = out.transpose(2, 3).reshape_as(lmem)
-        out, w_gate = torch.einsum('mbnd,mde->mbne', out, w_out).chunk(2, dim=-1)
-
-        # GRU gate the input
-
-        out = w_gate.sigmoid() * lmem + out
-
-        # feedforward for extra good measure
-
-        normed_out = self.norm(out)
-        ff_out, ff_gate = torch.einsum('mbnd,mde->mbne', normed_out, ff_w1).chunk(2, dim=-1)
-        ff_out = self.act(ff_gate) * ff_out
-        ff_out, ff_out_gate = torch.einsum('mbnd,mde->mbne', ff_out, ff_w2).chunk(2, dim=-1)
-
-        next_lmem = ff_out_gate.sigmoid() * out + ff_out
+        next_lmem = lmem
+        for _ in range(self.num_attn_steps):
+            attn_out = self.attn(next_lmem, smem = smem, hiddens = hiddens)
+            next_lmem = self.gate(attn_out, next_lmem)
 
         # fifo queue the short term memory
 
@@ -294,7 +324,7 @@ class MemoryAttentionNetwork(nn.Module):
 # transformer
 
 class MemoryTransformerXL(nn.Module):
-    def __init__(self, num_tokens, dim, seq_len, depth, emb_dim = None, memory_layers = None, mem_len = None, lmem_len = None, heads = 8, gru_gated_residual = False, mogrify_gru = False, attn_dropout = 0., ff_glu = False, ff_dropout = 0., attn_layer_dropout = 0., one_kv_head = False):
+    def __init__(self, num_tokens, dim, seq_len, depth, emb_dim = None, memory_layers = None, mem_len = None, lmem_len = None, heads = 8, gru_gated_residual = True, mogrify_gru = False, attn_dropout = 0., ff_glu = False, ff_dropout = 0., attn_layer_dropout = 0., one_kv_head = False):
         super().__init__()
         emb_dim = default(emb_dim, dim)
         mem_len = default(mem_len, seq_len)
@@ -360,7 +390,7 @@ class MemoryTransformerXL(nn.Module):
             if use_memory:
                 hiddens.append(x)
 
-            x = attn(x, memories = memories, calc_memory = use_memory, input_mask = mask, pos_emb = pos_emb)
+            x = attn(x, memories = memories, input_mask = mask, pos_emb = pos_emb)
             x = ff(x)
 
         hiddens = torch.stack(hiddens)

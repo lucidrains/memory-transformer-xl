@@ -23,12 +23,12 @@ model = MemoryTransformerXL(
     mem_len = 256,            # short term memory (the memory from transformer-xl)
     lmem_len = 256,           # long term memory (memory attention network attending to short term memory and hidden activations)
     memory_layers = [6,7,8]   # which layers to use memory, only the later layers are actually needed
-)
+).cuda()
 
-x1 = torch.randint(0, 20000, (1, 512))
+x1 = torch.randint(0, 20000, (1, 512)).cuda()
 logits1, mem1 = model(x1)
 
-x2 = torch.randint(0, 20000, (1, 512))
+x2 = torch.randint(0, 20000, (1, 512)).cuda()
 logits2, mem2 = model(x2, memories = mem1)
 
 # and so on with carrying over memories...
@@ -61,12 +61,12 @@ logits2, mem2 = model(x2, memories = mem1)
 
 ```bibtex
 @misc{parisotto2019stabilizing,
-    title={Stabilizing Transformers for Reinforcement Learning},
-    author={Emilio Parisotto and H. Francis Song and Jack W. Rae and Razvan Pascanu and Caglar Gulcehre and Siddhant M. Jayakumar and Max Jaderberg and Raphael Lopez Kaufman and Aidan Clark and Seb Noury and Matthew M. Botvinick and Nicolas Heess and Raia Hadsell},
-    year={2019},
-    eprint={1910.06764},
-    archivePrefix={arXiv},
-    primaryClass={cs.LG}
+    title     = {Stabilizing Transformers for Reinforcement Learning},
+    author    = {Emilio Parisotto and H. Francis Song and Jack W. Rae and Razvan Pascanu and Caglar Gulcehre and Siddhant M. Jayakumar and Max Jaderberg and Raphael Lopez Kaufman and Aidan Clark and Seb Noury and Matthew M. Botvinick and Nicolas Heess and Raia Hadsell},
+    year      = {2019},
+    eprint    = {1910.06764},
+    archivePrefix = {arXiv},
+    primaryClass = {cs.LG}
 }
 ```
 
@@ -93,6 +93,17 @@ logits2, mem2 = model(x2, memories = mem1)
     volume    = {abs/1907.01470},
     year      = {2019},
     url       = {http://arxiv.org/abs/1907.01470}
+}
+```
+
+```bibtex
+@misc{vecoven2020bioinspired,
+    title   = {A bio-inspired bistable recurrent cell allows for long-lasting memory},
+    author  = {Nicolas Vecoven and Damien Ernst and Guillaume Drion},
+    year    = {2020},
+    eprint  = {2006.05252},
+    archivePrefix = {arXiv},
+    primaryClass = {cs.NE}
 }
 ```
 
