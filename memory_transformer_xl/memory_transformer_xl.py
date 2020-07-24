@@ -42,6 +42,16 @@ def split_at_index(dim, index, t):
     r = (*pre_slices, slice(index, None))
     return t[l], t[r]
 
+def queue_fifo(*args, length, dim=-2):
+    queue = torch.cat(args, dim=dim)
+    if length > 0:
+        return split_at_index(dim, -length, queue)
+
+    device = queue.device
+    shape = list(queue.shape)
+    shape[dim] = 0
+    return queue, torch.empty(shape, device = device)
+
 def shift(x):
     *_, i, j = x.shape
     zero_pad = torch.zeros((*_, i, i), **to(x))
@@ -314,11 +324,7 @@ class MemoryAttentionNetwork(nn.Module):
             next_lmem = self.gate(attn_out, next_lmem)
 
         # fifo queue the short term memory
-
-        next_mem = smem
-        if self.mem_len > 0:
-            short_memory_and_hiddens = torch.cat((smem, hiddens), dim=2)
-            _, next_mem = split_at_index(2, -self.mem_len, short_memory_and_hiddens)
+        _, next_mem = queue_fifo(smem, hiddens, length = self.mem_len, dim = 2)
 
         return Memory(short = next_mem.detach(), long = next_lmem)
 
