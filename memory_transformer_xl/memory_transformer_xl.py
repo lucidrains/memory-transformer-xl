@@ -77,7 +77,7 @@ class GRUGating(nn.Module):
         super().__init__()
         self.dim = dim
         self.fn = fn
-        self.gru = nn.GRUCell(dim, dim)
+        self.gru = nBRC(dim, dim)
         self.mogrify = Mogrifier(dim, factorize_k = dim // 4) if mogrify else None
 
     def forward(self, x, **kwargs):
@@ -101,6 +101,7 @@ class PreNorm(nn.Module):
         super().__init__()
         self.norm = nn.LayerNorm(dim)
         self.fn = fn
+
     def forward(self, x, **kwargs):
         x = self.norm(x)
         return self.fn(x, **kwargs)
