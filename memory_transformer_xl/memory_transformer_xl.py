@@ -287,7 +287,7 @@ class LinearSelfAttention(nn.Module):
         return out
 
 class MemoryAttentionNetwork(nn.Module):
-    def __init__(self, dim, num_memory_depth, mem_len, lmem_len, heads = 4, num_attn_steps = 2, num_mem_kv = 4):
+    def __init__(self, dim, num_memory_depth, mem_len, lmem_len, heads = 4, num_attn_steps = 2, num_mem_kv = 4, mem_write_iters = 2):
         super().__init__()
         self.num_memory_depth = num_memory_depth
         self.mem_len = mem_len
@@ -305,7 +305,7 @@ class MemoryAttentionNetwork(nn.Module):
 
         self.attn = LinearSelfAttention(dim, num_memory_depth, heads = heads)
         self.gate = nBRC(dim, dim)
-        self.num_attn_steps = num_attn_steps
+        self.mem_write_iters = mem_write_iters
 
     def forward(self, lmem, smem, hiddens, detach_lmem = False):
         batch, dim, dim_head, mem_depth, lmem_len = lmem.shape[0], self.dim, self.dim_head, self.num_memory_depth, self.lmem_len
@@ -330,7 +330,7 @@ class MemoryAttentionNetwork(nn.Module):
         all_hiddens = (hiddens_and_smem + self.depth_emb).transpose(0, 1).reshape(batch, -1, dim)
         all_hiddens = torch.cat((all_hiddens, self.mem_kv.expand(batch, -1, -1)), dim=1)
 
-        for _ in range(self.num_attn_steps):
+        for _ in range(self.mem_write_iters):
             attn_out = self.attn(next_lmem, hiddens = all_hiddens)
             next_lmem = self.gate(attn_out, next_lmem)
 
@@ -342,7 +342,7 @@ class MemoryAttentionNetwork(nn.Module):
 # transformer
 
 class MemoryTransformerXL(nn.Module):
-    def __init__(self, num_tokens, dim, seq_len, depth, emb_dim = None, memory_layers = None, mem_len = None, lmem_len = None, heads = 8, gru_gated_residual = True, mogrify_gru = False, attn_dropout = 0., ff_glu = False, ff_dropout = 0., attn_layer_dropout = 0., one_kv_head = False, num_mem_kv = 0):
+    def __init__(self, num_tokens, dim, seq_len, depth, emb_dim = None, memory_layers = None, mem_len = None, lmem_len = None, heads = 8, gru_gated_residual = True, mogrify_gru = False, attn_dropout = 0., ff_glu = False, ff_dropout = 0., attn_layer_dropout = 0., one_kv_head = False, num_mem_kv = 0, mem_write_iters = 2):
         super().__init__()
         emb_dim = default(emb_dim, dim)
         mem_len = default(mem_len, seq_len)
@@ -374,7 +374,7 @@ class MemoryTransformerXL(nn.Module):
         self.attn_layers = nn.ModuleList([wrapper(PreNorm(dim, SelfAttention(dim, seq_len, mem_len, lmem_len, heads, dropout = attn_layer_dropout, attn_dropout = attn_dropout, one_kv_head = one_kv_head, num_mem_kv = num_mem_kv))) for _ in range(depth)])
         self.ff_layers = nn.ModuleList([wrapper(PreNorm(dim, FeedForward(dim, dropout = ff_dropout, glu = ff_glu))) for _ in range(depth)])
 
-        self.memory_network = MemoryAttentionNetwork(dim, len(self.memory_layers), mem_len, lmem_len, num_mem_kv = num_mem_kv)
+        self.memory_network = MemoryAttentionNetwork(dim, len(self.memory_layers), mem_len, lmem_len, num_mem_kv = num_mem_kv, mem_write_iters = mem_write_iters)
 
     def forward(self, x, memories = None, mask = None, detach_lmem = False):
         x = self.token_emb(x)

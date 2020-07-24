@@ -23,7 +23,8 @@ model = MemoryTransformerXL(
     mem_len = 256,            # short term memory (the memory from transformer-xl)
     lmem_len = 256,           # long term memory (memory attention network attending to short term memory and hidden activations)
     memory_layers = [6,7,8],  # which layers to use memory, only the later layers are actually needed
-    num_mem_kv = 128          # number of memory key/values, from All-attention paper
+    num_mem_kv = 128,         # number of memory key/values, from All-attention paper
+    mem_write_iters = 2       # number of iterations of attention for writing to memory
 ).cuda()
 
 x1 = torch.randint(0, 20000, (1, 512)).cuda()
