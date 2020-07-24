@@ -244,9 +244,7 @@ class SelfAttention(nn.Module):
 # memory attention network
 
 def linear_attn(q, k, v):
-    q = q.softmax(dim=-1)
-    k = k.softmax(dim=-2)
-
+    q, k = q.softmax(dim=-1), k.softmax(dim=-2)
     context = torch.einsum('bhnd,bhne->bhde', k, v)
     out = torch.einsum('bhnd,bhde->bhne', q, context)
     return out
