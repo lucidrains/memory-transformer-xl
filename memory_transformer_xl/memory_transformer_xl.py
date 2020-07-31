@@ -403,7 +403,7 @@ class MemoryTransformerXL(nn.Module):
         for ind, (attn, ff) in enumerate(zip(self.attn_layers, self.ff_layers)):
             layer_num = ind + 1
             use_memory = layer_num in self.memory_layers
-            memories = next(mem_iter), lmem if use_memory else None
+            memories = (next(mem_iter), lmem) if use_memory else None
 
             if use_memory:
                 hiddens.append(x)
